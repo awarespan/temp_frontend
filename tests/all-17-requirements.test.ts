@@ -297,16 +297,13 @@ describe('AWARESPAN Volunteer Portal — 17 Mandatory Test Scenarios', () => {
     const stream = await media.startCapture({ video: true, audio: true });
     const tracks = stream.getTracks();
 
-    let clientClosed = false;
     const client = new PiConnectionClient(baseConfig, {
       onStatusChange: vi.fn(),
       onSourceAcknowledged: vi.fn(),
       onLatencyUpdate: vi.fn(),
       onHeartbeat: vi.fn(),
       onError: vi.fn(),
-      onClose: () => {
-        clientClosed = true;
-      },
+      onClose: vi.fn(),
     });
 
     await client.connectAndVolunteer('both', 'token');

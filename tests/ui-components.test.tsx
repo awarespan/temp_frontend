@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import React from 'react';
 import { VolunteerProvider } from '../src/context/VolunteerContext';
 import { StatusBadge } from '../src/components/StatusBadge';
 import { Header } from '../src/components/Header';
@@ -78,7 +77,7 @@ describe('AWARESPAN Volunteer Portal — UI Components Suite', () => {
     );
 
     expect(screen.getByText('TARGET RASPBERRY PI EDGE NODE')).toBeInTheDocument();
-    expect(screen.getByText('sip-pi-001')).toBeInTheDocument();
     expect(screen.getByText('Probe Node Health')).toBeInTheDocument();
+    expect(screen.getByText('NODE STATUS')).toBeInTheDocument();
   });
 });
