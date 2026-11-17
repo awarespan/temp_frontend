@@ -8,7 +8,7 @@
  * - Dev/Mock Mode: High-fidelity simulator for end-to-end testing without hardware.
  */
 
-import { FramePayload, PiNodeConfig, VolunteerMode } from '../types';
+import { AnnotatedFramePayload, FramePayload, PiDetectionEvent, PiNodeCapabilities, PiNodeConfig, VolunteerMode } from '../types';
 
 export interface PiClientCallbacks {
   onStatusChange: (status: 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'rejected') => void;
@@ -17,12 +17,18 @@ export interface PiClientCallbacks {
   onHeartbeat: (timestamp: number) => void;
   onError: (error: string) => void;
   onClose: (reason: string) => void;
+  onAnnotatedFrame?: (frame: AnnotatedFramePayload) => void;
+  onDetectionEvent?: (event: PiDetectionEvent) => void;
+  onCapabilities?: (capabilities: PiNodeCapabilities) => void;
+  onSourceRejected?: (source: 'camera' | 'microphone', reason: string) => void;
 }
 
 export class PiConnectionClient {
   private config: PiNodeConfig;
   private callbacks: PiClientCallbacks;
   private ws: WebSocket | null = null;
+  private dashboardWs: WebSocket | null = null;
+  private dashboardReconnectTimer: number | null = null;
   private isConnecting: boolean = false;
   private isConnected: boolean = false;
   private isVolunteering: boolean = false;
@@ -48,7 +54,7 @@ export class PiConnectionClient {
   /**
    * Check if Raspberry Pi node is online by probing /health.
    */
-  public async checkHealth(): Promise<{ online: boolean; nodeId?: string; error?: string }> {
+  public async checkHealth(): Promise<{ online: boolean; nodeId?: string; capabilities?: PiNodeCapabilities; error?: string }> {
     if (this.config.mockMode) {
       return { online: true, nodeId: this.config.nodeId };
     }
@@ -74,7 +80,9 @@ export class PiConnectionClient {
             clearTimeout(timer);
             try {
               const data = JSON.parse(event.data);
-              resolve({ online: data.status === 'ok', nodeId: data.node });
+              const capabilities = data.capabilities as PiNodeCapabilities | undefined;
+              if (capabilities) this.callbacks.onCapabilities?.(capabilities);
+              resolve({ online: data.status === 'ok', nodeId: data.node, capabilities });
             } catch {
               resolve({ online: true, nodeId: this.config.nodeId });
             }
@@ -157,6 +165,7 @@ export class PiConnectionClient {
           this.isConnected = true;
           this.isVolunteering = true;
           this.callbacks.onStatusChange('connected');
+          this.connectDashboardFeed();
 
           // Send session handshake header / metadata if supported
           try {
@@ -171,17 +180,6 @@ export class PiConnectionClient {
             console.warn('[PiClient] Handshake send failed:', e);
           }
 
-          // In node_runtime/main.py, camera frames are accepted immediately on /ingest
-          if (this.activeMode === 'camera' || this.activeMode === 'both') {
-            this.callbacks.onSourceAcknowledged('camera');
-          }
-
-          if (this.activeMode === 'microphone' || this.activeMode === 'both') {
-            // Note: node_runtime does not yet consume audio over /ingest,
-            // but we signal state abstraction
-            this.callbacks.onSourceAcknowledged('microphone');
-          }
-
           // Start ping/latency monitoring
           this.startHeartbeatMonitor();
           resolve(true);
@@ -190,6 +188,12 @@ export class PiConnectionClient {
         this.ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
+            if (data.type === 'capabilities') {
+              this.callbacks.onCapabilities?.(data as PiNodeCapabilities);
+            }
+            if (data.type === 'source_rejected' && (data.source === 'camera' || data.source === 'microphone')) {
+              this.callbacks.onSourceRejected?.(data.source, String(data.reason || 'Source rejected by Pi.'));
+            }
             if (data.type === 'pong' && this.lastPingSentTs > 0) {
               const rtt = Date.now() - this.lastPingSentTs;
               this.callbacks.onLatencyUpdate(rtt);
@@ -227,6 +231,7 @@ export class PiConnectionClient {
           this.isConnected = false;
           this.isConnecting = false;
           this.stopHeartbeatMonitor();
+          this.closeDashboardFeed();
 
           if (this.isRejected) {
             this.callbacks.onClose(event.reason || 'Session rejected by node');
@@ -248,6 +253,56 @@ export class PiConnectionClient {
         resolve(false);
       }
     });
+  }
+
+  /**
+   * Subscribe to the Pi's read-only dashboard stream. Annotated JPEG frames
+   * already contain boxes drawn by the Pi's inference pipeline.
+   */
+  private connectDashboardFeed(): void {
+    if (this.config.mockMode || !this.isConnected || this.manualStop) return;
+    if (!this.callbacks.onAnnotatedFrame && !this.callbacks.onDetectionEvent) return;
+    if (this.dashboardWs && (this.dashboardWs.readyState === WebSocket.OPEN || this.dashboardWs.readyState === WebSocket.CONNECTING)) return;
+    const protocol = this.config.useSsl ? 'wss' : 'ws';
+    const url = `${protocol}://${this.config.piHost}:${this.config.piPort}/`;
+    try {
+      const socket = new WebSocket(url);
+      this.dashboardWs = socket;
+      socket.onmessage = (message) => {
+        try {
+          const data = JSON.parse(message.data);
+          if (data.type === 'capabilities') {
+            this.callbacks.onCapabilities?.(data as PiNodeCapabilities);
+          } else if (data.type === 'frame' && typeof data.annotated_b64 === 'string') {
+            this.callbacks.onAnnotatedFrame?.(data as AnnotatedFramePayload);
+          } else if (data.type === 'log' && data.event?.event_id) {
+            this.callbacks.onDetectionEvent?.(data.event as PiDetectionEvent);
+          }
+        } catch { /* Ignore unrelated dashboard messages. */ }
+      };
+      socket.onclose = () => {
+        if (this.dashboardWs === socket) this.dashboardWs = null;
+        if (this.isConnected && !this.manualStop) {
+          this.dashboardReconnectTimer = window.setTimeout(() => this.connectDashboardFeed(), 2000);
+        }
+      };
+      socket.onerror = () => { /* Dashboard reconnects independently of media ingest. */ };
+    } catch {
+      this.dashboardWs = null;
+    }
+  }
+
+  private closeDashboardFeed(): void {
+    if (this.dashboardReconnectTimer !== null) {
+      clearTimeout(this.dashboardReconnectTimer);
+      this.dashboardReconnectTimer = null;
+    }
+    if (this.dashboardWs) {
+      const socket = this.dashboardWs;
+      this.dashboardWs = null;
+      socket.onclose = null;
+      try { socket.close(); } catch { /* already closed */ }
+    }
   }
 
   /**
@@ -408,6 +463,7 @@ export class PiConnectionClient {
     }
 
     this.stopHeartbeatMonitor();
+    this.closeDashboardFeed();
 
     if (this.ws) {
       try {

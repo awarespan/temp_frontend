@@ -3,7 +3,8 @@ import { useVolunteer } from '../context/VolunteerContext';
 import { Clock, Send, Wifi, Server, CheckCircle2, XCircle } from 'lucide-react';
 
 export const SessionMonitor: React.FC = () => {
-  const { telemetry, connectionState } = useVolunteer();
+  const { telemetry, connectionState, piCapabilities, config } = useVolunteer();
+  const microphoneAllowed = config.mockMode || piCapabilities?.browser_microphone_allowed === true;
 
   const formatDuration = (seconds: number) => {
     const hrs = Math.floor(seconds / 3600);
@@ -88,13 +89,18 @@ export const SessionMonitor: React.FC = () => {
           </div>
         </div>
 
-        {/* Metric 5: Mic Source ACK */}
+        {/* Metric 5: Mic Source ACK / input interlock */}
         <div className="bg-[#000000] border border-[#3c3c3c] p-3">
           <div className="text-[11px] font-mono text-[#737373] mb-1">
-            MIC SOURCE ACK
+            MIC INPUT STATUS
           </div>
           <div className="flex items-center gap-1.5">
-            {telemetry.microphoneActive ? (
+            {!microphoneAllowed ? (
+              <span className="flex items-center gap-1 text-xs font-mono text-amber-300">
+                <XCircle className="w-4 h-4" />
+                <span>LOCKED</span>
+              </span>
+            ) : telemetry.microphoneActive ? (
               <span className="flex items-center gap-1 text-xs font-mono text-emerald-400">
                 <CheckCircle2 className="w-4 h-4" />
                 <span>CONFIRMED</span>

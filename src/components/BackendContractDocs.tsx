@@ -41,7 +41,7 @@ export const BackendContractDocs: React.FC<BackendContractDocsProps> = ({ isOpen
             </p>
             <ul className="list-disc list-inside space-y-1.5 text-[#bfbfbf]">
               <li><strong className="text-white">Port &amp; Host:</strong> WebSocket server binds to <code>0.0.0.0:8766</code> (configurable via <code>RUNTIME_PORT</code>, default 8766).</li>
-              <li><strong className="text-white">Health Endpoint:</strong> <code>ws://&lt;host&gt;:8766/health</code> sends <code>{`{"status": "ok", "node": "<node_id>"}`}</code> and closes.</li>
+              <li><strong className="text-white">Health Endpoint:</strong> <code>ws://&lt;host&gt;:8766/health</code> sends node identity plus ALSA playback and microphone-input capability fields, then closes.</li>
               <li><strong className="text-white">Frame Ingestion Endpoint:</strong> <code>ws://&lt;host&gt;:8766/ingest</code> receives client frame packets.</li>
               <li>
                 <strong className="text-white">Frame Payload Schema:</strong>
@@ -54,7 +54,7 @@ export const BackendContractDocs: React.FC<BackendContractDocsProps> = ({ isOpen
 }`}
                 </pre>
               </li>
-              <li><strong className="text-white">Dashboard Broadcast Endpoint:</strong> <code>ws://&lt;host&gt;:8766/</code> broadcasts annotated visual frames and threat evaluation events.</li>
+              <li><strong className="text-white">Dashboard Broadcast Endpoint:</strong> <code>ws://&lt;host&gt;:8766/</code> broadcasts annotated visual frames, threat evaluation events, and refreshed hardware capabilities.</li>
             </ul>
           </div>
 
@@ -62,10 +62,10 @@ export const BackendContractDocs: React.FC<BackendContractDocsProps> = ({ isOpen
           <div className="p-4 bg-[#1a1a1a] border border-amber-900/60">
             <h3 className="text-sm font-semibold text-amber-400 uppercase mb-2 flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 text-amber-400" />
-              2. Missing Node Capabilities &amp; Required Backend Contract
+              2. Disabled / Future Node Capabilities
             </h3>
             <p className="text-[#bfbfbf] mb-3">
-              To support production volunteer portal operation without client-side assumptions, the Raspberry Pi edge node requires four enhancements:
+              The current production portal is camera-only until microphone ingestion is implemented. The controls below distinguish existing node behaviour from future proposals.
             </p>
 
             <div className="space-y-4">
@@ -84,31 +84,23 @@ Response: { "status": "authorized", "session_token": "vol-tok-...", "expires_at"
               </div>
 
               <div className="p-3 bg-[#000000] border border-[#3c3c3c]">
-                <h4 className="text-[#f5f5f5] font-bold mb-1">B. Audio Stream Ingestion</h4>
+                <h4 className="text-[#f5f5f5] font-bold mb-1">B. Microphone Ingestion — DISABLED</h4>
                 <p className="text-[#737373] mb-2">
-                  <code>node_runtime/detection/audio/audio_classifier.py</code> exists in passive file mode. An ingestion path is required to route audio chunks into the acoustic classifier.
+                  The Pi currently has no live volunteer-microphone ingestion pipeline. Production capability reports microphone input unavailable; the portal blocks browser microphone permissions and the Pi rejects audio chunks. The browser cannot own or substitute for Pi audio output.
                 </p>
-                <div className="text-[#bfbfbf]">
-                  <strong>Proposed Ingestion:</strong> WebSocket message over <code>/ingest</code>:
-                  <pre className="mt-1 p-2 bg-[#1a1a1a] border border-[#3c3c3c] text-[#bfbfbf]">
-{`{
-  "type": "audio_chunk",
-  "chunk_id": 42,
-  "format": "pcm_16000_16bit_mono",
-  "audio_b64": "<base64 encoded audio bytes>"
-}`}
-                  </pre>
-                </div>
+                <pre className="p-2 bg-[#1a1a1a] border border-[#3c3c3c] text-[#bfbfbf]">
+{`{ "type": "source_rejected", "source": "microphone", "reason": "Pi runtime audio ingestion is not enabled." }`}
+                </pre>
               </div>
 
               <div className="p-3 bg-[#000000] border border-[#3c3c3c]">
                 <h4 className="text-[#f5f5f5] font-bold mb-1">C. Bidirectional Source Acknowledgement (ACK)</h4>
                 <p className="text-[#737373] mb-2">
-                  The frontend must not fake an active state. The node must emit explicit acknowledgements back across the WebSocket connection:
+                  The frontend must not fake an active state. The Pi currently acknowledges camera input only; microphone input is explicitly rejected:
                 </p>
                 <pre className="p-2 bg-[#1a1a1a] border border-[#3c3c3c] text-[#bfbfbf]">
-{`{ "type": "ack", "source": "camera", "status": "active" }
-{ "type": "ack", "source": "microphone", "status": "active" }
+{`{ "type": "ack", "source": "camera" }
+{ "type": "source_rejected", "source": "microphone", "reason": "Pi runtime audio ingestion is not enabled." }
 { "type": "heartbeat", "ts_ms": 1794424650000 }`}
                 </pre>
               </div>

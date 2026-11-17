@@ -4,7 +4,7 @@ import { Cpu, Wifi, Activity, CheckCircle, AlertTriangle } from 'lucide-react';
 import { formatWsUrl } from '../services/config';
 
 export const OverviewSection: React.FC = () => {
-  const { config, connectionState, telemetry } = useVolunteer();
+  const { config, connectionState, telemetry, piCapabilities } = useVolunteer();
   const [probing, setProbing] = useState(false);
   const [probeResult, setProbeResult] = useState<string | null>(null);
 
@@ -134,7 +134,7 @@ export const OverviewSection: React.FC = () => {
               {getSourceCount()}
             </span>
             <span className="text-[#737373]">
-              / 2 (Cam: {telemetry.cameraActive ? 'ON' : 'OFF'} | Mic: {telemetry.microphoneActive ? 'ON' : 'OFF'})
+              / 2 (Cam: {telemetry.cameraActive ? 'ON' : 'OFF'} | Mic: {piCapabilities?.browser_microphone_allowed ? (telemetry.microphoneActive ? 'ON' : 'OFF') : 'LOCKED'})
             </span>
           </div>
         </div>

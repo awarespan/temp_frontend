@@ -1,6 +1,6 @@
-# AWARESPAN — Temporary Volunteer Camera & Microphone Portal
+# AWARESPAN — Temporary Volunteer Camera Portal
 
-> *A modular, lightweight, and temporary web application allowing authorized operator devices to volunteer their cameras, microphones, or both as auxiliary input sources for an AWARESPAN Raspberry Pi edge node.*
+> *A modular, lightweight, temporary web application for authorized operator devices to volunteer camera input to an AWARESPAN Raspberry Pi edge node. The Pi owns local audio output; browser microphone donation is disabled until a real Pi-side input pipeline is commissioned.*
 
 ---
 
@@ -34,11 +34,11 @@ The application strictly implements the design system documented in the primary 
 Inspection of `node-backend` (`origin https://github.com/awarespan/node-core-processing.git`) identified:
 
 * **Port:** `8766` (Configurable via `RUNTIME_PORT`).
-* **Health Probe:** `ws://<pi_host>:8766/health` &rarr; responds with node ID and closes.
+* **Health Probe:** `ws://<pi_host>:8766/health` &rarr; responds with node ID and Pi audio/input capabilities, then closes.
 * **Visual Frame Ingest:** `ws://<pi_host>:8766/ingest` &rarr; accepts JSON packets matching `{ type: "frame", frame_id, ts_ms, jpeg_b64 }`.
 * **Dashboard Stream:** `ws://<pi_host>:8766/` &rarr; broadcasts annotated frames and threat evaluation logs.
 
-*See [`BACKEND_CONTRACT.md`](./BACKEND_CONTRACT.md) for the complete integration contract, missing capabilities, and Telegram notification patch.*
+*See [`BACKEND_CONTRACT.md`](./BACKEND_CONTRACT.md) for the integration contract, Pi-owned audio interlock, and evidence feed.*
 
 ---
 
@@ -96,11 +96,11 @@ The portal's Vitest test suite (`tests/all-17-requirements.test.ts`) verifies:
 2. **Failed Authentication:** Rejects invalid format or bad TOTP code without session issue.
 3. **Camera Permission Granted:** Initializes local stream and starts canvas capture loop.
 4. **Camera Permission Denied:** Detects `NotAllowedError` and enters `PERMISSION_DENIED`.
-5. **Microphone Permission Granted:** Initializes Web Audio API analyzer and RMS/peak VU meter.
-6. **Microphone Permission Denied:** Surfaces browser denial without halting other components.
+5. **Pi Audio Ownership:** Checks Pi capabilities before requesting browser permissions; the portal never plays deterrence audio.
+6. **Microphone Input Disabled:** Production microphone donation is blocked until the Pi advertises a working input pipeline; mock-mode tests can still simulate the UI.
 7. **Camera-Only Volunteering:** Transmits video frames and receives camera source ACK.
-8. **Microphone-Only Volunteering:** Channels audio activity and receives microphone source ACK.
-9. **Combined Volunteering:** Requires both permissions and awaits independent ACKs.
+8. **Microphone-Only Volunteering:** Refuses before browser permission unless the Pi explicitly advertises an operational microphone input path.
+9. **Combined Volunteering:** Degrades to camera-only when the Pi has not advertised a supported microphone input path.
 10. **Pi Rejects Connection:** Correctly captures rejection message (e.g. node capacity exceeded).
 11. **Pi Becomes Unreachable:** Detects connection failure and alerts operator.
 12. **Browser Tab Closes:** Immediately ends all hardware streams and closes sockets.
@@ -109,3 +109,14 @@ The portal's Vitest test suite (`tests/all-17-requirements.test.ts`) verifies:
 15. **Auto-Reconnection:** Executes exponential backoff to recover from temporary glitches.
 16. **Session Expiration:** Detects expired session token and halts active volunteer media capture.
 17. **Hardware Stream Release:** Confirms all media tracks are ended so camera/mic LEDs turn off.
+
+## 6. Test Sound & Detection Evidence
+
+* **Pi-Owned Deterrence:** The Pi generates the bounded warning tone locally. The selected pitch and actual playback-start result are included in the incident payload, persisted in `response_events`, and delivered to the Android application. Telegram is diagnostic only.
+* **Detection Evidence:** Subscribes to the Pi's read-only dashboard WebSocket and pairs a threat event with the corresponding Pi-generated annotated JPEG by source and frame ID. The image is downloadable from the portal.
+* **Telegram Evidence:** The Pi sends the annotated detection image through Telegram `sendPhoto`, with event ID, labels and confidence in the caption. Inference does not wait for Telegram delivery.
+
+
+## 7. Audio and Incident Delivery Ownership
+
+The Raspberry Pi is the sole audio-output owner. The temporary website has no local deterrence playback controls. It reads the Pi's advertised ALSA capability and does not request microphone permissions; the current node has no working volunteer microphone-ingestion path, so audio donation is disabled in production. The Pi records each attempted warning in the incident metadata and sends it over MQTT or REST, with a local SQLite retry queue. The backend writes the outcome to `response_events`, includes response events in incident list/detail responses, and pushes the incident to authenticated Android WebSocket subscribers. The Android Event History and Incident Detail screens display the actual Pi-reported result. Telegram is an additional diagnostic channel, not the product delivery path.

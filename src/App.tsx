@@ -3,6 +3,8 @@ import { Header } from './components/Header';
 import { OverviewSection } from './components/OverviewSection';
 import { VolunteerControls } from './components/VolunteerControls';
 import { MediaPreview } from './components/MediaPreview';
+import { PiSpeakerStatusPanel } from './components/PiSpeakerStatusPanel';
+import { DetectionEvidence } from './components/DetectionEvidence';
 import { SessionMonitor } from './components/SessionMonitor';
 import { TerminalLogs } from './components/TerminalLogs';
 import { LoginModal } from './components/LoginModal';
@@ -36,12 +38,12 @@ export const App: React.FC = () => {
                 <span>AWARESPAN ECOSYSTEM // TEMPORARY INPUT NODE</span>
               </div>
               <h1 className="text-2xl sm:text-3xl font-light text-[#f5f5f5] tracking-tight">
-                Volunteer Camera &amp; Microphone Portal
+                Volunteer Camera Portal
               </h1>
               <p className="text-xs text-[#bfbfbf] max-w-2xl mt-2 leading-relaxed">
-                Allows authorized operator devices to volunteer their cameras, microphones,
-                or both as auxiliary observation feeds for an AWARESPAN Raspberry Pi edge node.
-                This temporary utility will be retired once dedicated sensing hardware is commissioned.
+                Allows authorized operator devices to volunteer camera input as an auxiliary observation feed
+                for an AWARESPAN Raspberry Pi edge node. Audio output remains Pi-owned; browser microphone
+                donation is disabled until a live Pi-side input pipeline is available.
               </p>
             </div>
 
@@ -55,16 +57,22 @@ export const App: React.FC = () => {
         {/* 1. Overview Section */}
         <OverviewSection />
 
-        {/* 2. Volunteer Device Controls */}
+        {/* 2. Pi-owned output capability and volunteer source guards */}
+        <PiSpeakerStatusPanel />
+
+        {/* 3. Volunteer Device Controls */}
         <VolunteerControls onOpenAuthPrompt={() => setIsAuthOpen(true)} />
 
-        {/* 3. Media Preview (Camera & Mic Activity) */}
+        {/* 4. Media Preview (Camera & Mic Activity) */}
         <MediaPreview />
 
-        {/* 4. Live Session Telemetry */}
+        {/* 5. Annotated evidence returned by the Pi */}
+        <DetectionEvidence />
+
+        {/* 6. Live Session Telemetry */}
         <SessionMonitor />
 
-        {/* 5. Terminal Event Console */}
+        {/* 7. Terminal Event Console */}
         <TerminalLogs />
 
         {/* Architectural Notice Card */}

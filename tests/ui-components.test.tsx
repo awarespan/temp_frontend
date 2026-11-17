@@ -5,6 +5,8 @@ import { StatusBadge } from '../src/components/StatusBadge';
 import { Header } from '../src/components/Header';
 import { VolunteerControls } from '../src/components/VolunteerControls';
 import { OverviewSection } from '../src/components/OverviewSection';
+import { PiSpeakerStatusPanel } from '../src/components/PiSpeakerStatusPanel';
+import { DetectionEvidence } from '../src/components/DetectionEvidence';
 
 describe('AWARESPAN Volunteer Portal — UI Components Suite', () => {
   it('renders StatusBadge with correct styles and text for all states', () => {
@@ -64,9 +66,11 @@ describe('AWARESPAN Volunteer Portal — UI Components Suite', () => {
     expect(screen.getByText('03 // Both Sources')).toBeInTheDocument();
     expect(screen.getByText('START VOLUNTEERING NOW')).toBeInTheDocument();
 
-    // Switch mode
-    fireEvent.click(screen.getByText('02 // Microphone'));
-    expect(screen.getByText('Target Microphone')).toBeInTheDocument();
+    // The live portal fails closed until the Pi advertises an audio input path.
+    expect(screen.getByText(/Audio donation is locked/i)).toBeInTheDocument();
+    expect(screen.getByText('02 // Microphone').closest('button')).toBeDisabled();
+    fireEvent.click(screen.getByText('01 // Camera'));
+    expect(screen.getByText('Target Video Camera')).toBeInTheDocument();
   });
 
   it('renders OverviewSection with node ID and target URL', () => {
@@ -80,4 +84,26 @@ describe('AWARESPAN Volunteer Portal — UI Components Suite', () => {
     expect(screen.getByText('Probe Node Health')).toBeInTheDocument();
     expect(screen.getByText('NODE STATUS')).toBeInTheDocument();
   });
+
+  it('renders the Pi-owned audio hardware status without browser playback controls', () => {
+    render(
+      <VolunteerProvider>
+        <PiSpeakerStatusPanel />
+      </VolunteerProvider>
+    );
+    expect(screen.getByText('PI AUDIO HARDWARE OWNERSHIP')).toBeInTheDocument();
+    expect(screen.getByText(/Waiting for the Pi to report audio capabilities/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /play deterrence tone/i })).not.toBeInTheDocument();
+  });
+
+  it('renders the Pi detection evidence area before the first detection', () => {
+    render(
+      <VolunteerProvider>
+        <DetectionEvidence />
+      </VolunteerProvider>
+    );
+    expect(screen.getByText('DETECTION EVIDENCE')).toBeInTheDocument();
+    expect(screen.getByText('No detections received yet.')).toBeInTheDocument();
+  });
+
 });

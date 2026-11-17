@@ -18,6 +18,8 @@ export const VolunteerControls: React.FC<VolunteerControlsProps> = ({ onOpenAuth
     startVolunteering,
     stopVolunteering,
     session,
+    piCapabilities,
+    config,
   } = useVolunteer();
 
   const isVolunteering =
@@ -28,6 +30,7 @@ export const VolunteerControls: React.FC<VolunteerControlsProps> = ({ onOpenAuth
     connectionState === 'AWAITING_PI_ACK' ||
     connectionState === 'RECONNECTING';
 
+  const microphoneBlocked = !config.mockMode && (piCapabilities?.speaker_output_available === true || piCapabilities?.browser_microphone_allowed !== true);
   const showCameraSelect = volunteerMode === 'camera' || volunteerMode === 'both';
   const showMicSelect = volunteerMode === 'microphone' || volunteerMode === 'both';
 
@@ -82,7 +85,7 @@ export const VolunteerControls: React.FC<VolunteerControlsProps> = ({ onOpenAuth
           {/* Option 2: Microphone */}
           <button
             type="button"
-            disabled={isVolunteering}
+            disabled={isVolunteering || microphoneBlocked}
             onClick={() => setVolunteerMode('microphone')}
             className={`flex items-center justify-center gap-2 py-3 px-4 font-mono text-xs uppercase tracking-wider transition-colors border cursor-pointer disabled:opacity-60 ${
               volunteerMode === 'microphone'
@@ -97,7 +100,7 @@ export const VolunteerControls: React.FC<VolunteerControlsProps> = ({ onOpenAuth
           {/* Option 3: Camera + Microphone */}
           <button
             type="button"
-            disabled={isVolunteering}
+            disabled={isVolunteering || microphoneBlocked}
             onClick={() => setVolunteerMode('both')}
             className={`flex items-center justify-center gap-2 py-3 px-4 font-mono text-xs uppercase tracking-wider transition-colors border cursor-pointer disabled:opacity-60 ${
               volunteerMode === 'both'
@@ -114,12 +117,20 @@ export const VolunteerControls: React.FC<VolunteerControlsProps> = ({ onOpenAuth
           </button>
         </div>
 
+        {microphoneBlocked && (
+          <p className="mt-3 text-[11px] font-mono text-amber-300 flex items-center gap-1.5">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            <span>{piCapabilities?.speaker_output_available
+              ? 'Pi audio output is present. The browser microphone and audio source options are locked.'
+              : 'The Pi has not advertised an operational microphone ingestion path. Audio donation is locked.'}</span>
+          </p>
+        )}
+
         {volunteerMode === 'both' && (
           <p className="mt-2 text-[11px] font-mono text-[#bfbfbf] flex items-center gap-1.5">
             <AlertCircle className="w-3.5 h-3.5 text-[#ff4f2b] shrink-0" />
             <span>
-              Both camera and microphone permissions are required. The Raspberry Pi will
-              acknowledge and monitor each input channel independently.
+              Both source permissions are required. Microphone donation is permitted only after the Pi explicitly advertises an available input path and no Pi-owned output conflict exists.
             </span>
           </p>
         )}

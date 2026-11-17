@@ -15,12 +15,16 @@ import React, {
 import {
   AuthSession,
   AvailableDevices,
+  AnnotatedFramePayload,
   ConnectionState,
+  DetectionEvidence,
+  PiDetectionEvent,
   MediaPermissionState,
   PiNodeConfig,
   PortalLog,
   SessionTelemetry,
   VolunteerMode,
+  PiNodeCapabilities,
 } from '../types';
 import { getInitialConfig } from '../services/config';
 import {
@@ -64,6 +68,8 @@ interface VolunteerContextValue {
   telemetry: SessionTelemetry;
   logs: PortalLog[];
   clearLogs: () => void;
+  detectionEvidence: DetectionEvidence[];
+  piCapabilities: PiNodeCapabilities | null;
 }
 
 const VolunteerContext = createContext<VolunteerContextValue | undefined>(undefined);
@@ -73,6 +79,7 @@ export const VolunteerProvider: React.FC<{ children: ReactNode }> = ({ children 
   const [session, setSession] = useState<AuthSession | null>(getActiveSession);
   const [connectionState, setConnectionState] = useState<ConnectionState>('NOT_CONNECTED');
   const [volunteerMode, setVolunteerMode] = useState<VolunteerMode>('camera');
+  const [piCapabilities, setPiCapabilities] = useState<PiNodeCapabilities | null>(null);
 
   const [devices, setDevices] = useState<AvailableDevices>({
     cameras: [],
@@ -105,6 +112,8 @@ export const VolunteerProvider: React.FC<{ children: ReactNode }> = ({ children 
   });
 
   const [logs, setLogs] = useState<PortalLog[]>([]);
+  const [detectionEvidence, setDetectionEvidence] = useState<DetectionEvidence[]>([]);
+  const pendingDetectionsRef = useRef<Map<string, { event: PiDetectionEvent; timer: number }>>(new Map());
 
   // Services instances refs
   const mediaManagerRef = useRef<MediaCaptureManager>(new MediaCaptureManager());
@@ -136,6 +145,41 @@ export const VolunteerProvider: React.FC<{ children: ReactNode }> = ({ children 
   // Update telemetry helper
   const updateTelemetry = useCallback((patch: Partial<SessionTelemetry>) => {
     setTelemetry((prev) => ({ ...prev, ...patch }));
+  }, []);
+
+  // Match Pi threat events to the annotated frame emitted for the same frame_id.
+  const handleDetectionEvent = useCallback((event: PiDetectionEvent) => {
+    const eventKey = `${event.source_id || 'unknown'}:${event.frame_id}`;
+    const previous = pendingDetectionsRef.current.get(eventKey);
+    if (previous) window.clearTimeout(previous.timer);
+    const timer = window.setTimeout(() => {
+      const pending = pendingDetectionsRef.current.get(eventKey);
+      if (pending?.event.event_id !== event.event_id) return;
+      pendingDetectionsRef.current.delete(eventKey);
+      setDetectionEvidence((items) => [{ event, imageUrl: '', capturedAt: Date.now() }, ...items].slice(0, 8));
+      addLog('warn', 'media', `Detection ${event.event_id} arrived without its annotated frame.`);
+    }, 2500);
+    pendingDetectionsRef.current.set(eventKey, { event, timer });
+    addLog('success', 'ack', `Pi reported ${event.labels.join(', ') || 'a threat'}; waiting for annotated evidence.`);
+  }, [addLog]);
+
+  const handleAnnotatedFrame = useCallback((frame: AnnotatedFramePayload) => {
+    const frameKey = `${frame.source_id || 'unknown'}:${frame.frame_id}`;
+    const pending = pendingDetectionsRef.current.get(frameKey);
+    if (!pending) return;
+    window.clearTimeout(pending.timer);
+    pendingDetectionsRef.current.delete(frameKey);
+    const imageUrl = `data:image/jpeg;base64,${frame.annotated_b64}`;
+    setDetectionEvidence((items) => [
+      { event: pending.event, imageUrl, capturedAt: Date.now() },
+      ...items.filter((item) => item.event.event_id !== pending.event.event_id),
+    ].slice(0, 8));
+    addLog('success', 'media', `Annotated evidence received for ${pending.event.event_id}.`);
+  }, [addLog]);
+
+  useEffect(() => () => {
+    pendingDetectionsRef.current.forEach((pending) => window.clearTimeout(pending.timer));
+    pendingDetectionsRef.current.clear();
   }, []);
 
   // Initialize PiConnectionClient
@@ -188,6 +232,29 @@ export const VolunteerProvider: React.FC<{ children: ReactNode }> = ({ children 
       onClose: (reason) => {
         addLog('info', 'network', `Pi connection closed: ${reason}`);
       },
+      onAnnotatedFrame: handleAnnotatedFrame,
+      onDetectionEvent: handleDetectionEvent,
+      onCapabilities: (capabilities) => {
+        setPiCapabilities(capabilities);
+        if (capabilities.speaker_output_available) {
+          setVolunteerMode((current) => current === 'microphone' || current === 'both' ? 'camera' : current);
+        }
+      },
+      onSourceRejected: (source, reason) => {
+        addLog('error', 'media', `Pi rejected ${source} input: ${reason}`);
+        mediaManagerRef.current.stopCapture();
+        setLocalStream(null);
+        if (videoRef.current) videoRef.current.srcObject = null;
+        if (frameIntervalRef.current !== null) clearInterval(frameIntervalRef.current);
+        if (audioIntervalRef.current !== null) clearInterval(audioIntervalRef.current);
+        if (durationTimerRef.current !== null) clearInterval(durationTimerRef.current);
+        frameIntervalRef.current = null;
+        audioIntervalRef.current = null;
+        durationTimerRef.current = null;
+        updateTelemetry({ cameraActive: false, microphoneActive: false, audioPeakLevel: 0, audioRmsLevel: 0 });
+        setConnectionState('BACKEND_UNAVAILABLE');
+        client.disconnect();
+      },
     });
 
     piClientRef.current = client;
@@ -195,7 +262,7 @@ export const VolunteerProvider: React.FC<{ children: ReactNode }> = ({ children 
     return () => {
       client.disconnect();
     };
-  }, [config, addLog, updateTelemetry]);
+  }, [config, addLog, updateTelemetry, handleAnnotatedFrame, handleDetectionEvent]);
 
   // Update config wrapper
   const updateConfig = useCallback((patch: Partial<PiNodeConfig>) => {
@@ -284,13 +351,46 @@ export const VolunteerProvider: React.FC<{ children: ReactNode }> = ({ children 
       return;
     }
 
-    const wantVideo = volunteerMode === 'camera' || volunteerMode === 'both';
-    const wantAudio = volunteerMode === 'microphone' || volunteerMode === 'both';
+    // 2. Confirm Pi capabilities BEFORE requesting any browser media permission.
+    let effectiveMode = volunteerMode;
+    if (!config.mockMode) {
+      if (!piClientRef.current) {
+        addLog('error', 'network', 'Pi client is unavailable; no media permission was requested.');
+        return;
+      }
+      const health = await piClientRef.current.checkHealth();
+      if (!health.online) {
+        setConnectionState('BACKEND_UNAVAILABLE');
+        addLog('error', 'network', `Pi capability check failed: ${health.error || 'node offline'}. No media permission was requested.`);
+        return;
+      }
+      const capabilities = health.capabilities;
+      if (capabilities) setPiCapabilities(capabilities);
+      const microphoneAllowed = capabilities?.browser_microphone_allowed === true
+        && capabilities?.speaker_output_available !== true;
+      if ((effectiveMode === 'microphone' || effectiveMode === 'both') && !microphoneAllowed) {
+        const reason = capabilities?.speaker_output_available
+          ? 'Pi audio output is owned by the Raspberry Pi.'
+          : 'The Pi has not advertised a working microphone ingestion path.';
+        if (effectiveMode === 'both') {
+          effectiveMode = 'camera';
+          setVolunteerMode('camera');
+          addLog('warn', 'media', `${reason} Browser microphone donation is disabled; continuing with camera only.`);
+        } else {
+          setConnectionState('BACKEND_UNAVAILABLE');
+          addLog('error', 'media', `${reason} Browser microphone capture is disabled.`);
+          return;
+        }
+      }
+    }
+
+    const wantVideo = effectiveMode === 'camera' || effectiveMode === 'both';
+    const wantAudio = effectiveMode === 'microphone' || effectiveMode === 'both';
 
     setConnectionState('CONNECTING');
-    addLog('info', 'system', `Initiating volunteer session: Mode = ${volunteerMode.toUpperCase()}`);
+    addLog('info', 'system', `Initiating volunteer session: Mode = ${effectiveMode.toUpperCase()}`);
 
-    // 2. Request Browser Permissions and Media Stream
+    // 3. Request Browser Permissions and Media Stream
     let stream: MediaStream;
     try {
       stream = await mediaManagerRef.current.startCapture({
@@ -346,7 +446,7 @@ export const VolunteerProvider: React.FC<{ children: ReactNode }> = ({ children 
       audioRmsLevel: 0,
     });
 
-    const connected = await piClientRef.current.connectAndVolunteer(volunteerMode, session.token);
+    const connected = await piClientRef.current.connectAndVolunteer(effectiveMode, session.token);
 
     if (!connected) {
       mediaManagerRef.current.stopCapture();
@@ -455,6 +555,14 @@ export const VolunteerProvider: React.FC<{ children: ReactNode }> = ({ children 
     addLog('info', 'system', 'Volunteer session terminated by user. Media tracks stopped.');
   }, [addLog, updateTelemetry]);
 
+  useEffect(() => {
+    if (piCapabilities?.speaker_output_available && telemetry.microphoneActive) {
+      addLog('warn', 'media', 'Pi audio output appeared while browser microphone was active. Stopping volunteer media and releasing browser devices.');
+      stopVolunteering();
+      setVolunteerMode('camera');
+    }
+  }, [piCapabilities, telemetry.microphoneActive, stopVolunteering, addLog]);
+
   // Handle browser tab close, unload, and network status changes
   useEffect(() => {
     const handleBeforeUnload = () => {
@@ -514,6 +622,8 @@ export const VolunteerProvider: React.FC<{ children: ReactNode }> = ({ children 
         telemetry,
         logs,
         clearLogs,
+        detectionEvidence,
+        piCapabilities,
       }}
     >
       {children}
