@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Header } from './components/Header';
 import { OverviewSection } from './components/OverviewSection';
+import { TestMediaSubmission } from './components/TestMediaSubmission';
 import { VolunteerControls } from './components/VolunteerControls';
 import { MediaPreview } from './components/MediaPreview';
 import { PiSpeakerStatusPanel } from './components/PiSpeakerStatusPanel';
@@ -56,6 +57,9 @@ export const App: React.FC = () => {
 
         {/* 1. Overview Section */}
         <OverviewSection />
+
+        {/* 1.1 Test Media Submission Interface */}
+        <TestMediaSubmission />
 
         {/* 2. Pi-owned output capability and volunteer source guards */}
         <PiSpeakerStatusPanel />
