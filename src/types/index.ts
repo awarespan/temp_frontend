@@ -24,6 +24,7 @@ export interface AuthSession {
   operatorId: string;
   issuedAt: number;
   expiresAt: number;
+  pairingExpiresAt?: number;
   isAuthenticated: boolean;
   nodeId: string;
 }
@@ -85,6 +86,7 @@ export interface PiNodeCapabilities {
 export interface PiNodeConfig {
   piHost: string;
   piPort: number;
+  gatewayPort: number;
   useSsl: boolean;
   nodeId: string;
   mockMode: boolean;

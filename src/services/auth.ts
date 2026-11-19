@@ -65,13 +65,11 @@ export const authenticateOperator = async (
     return { success: true, session };
   }
 
-  // PRODUCTION MODE:
-  // Must authenticate against the actual Raspberry Pi edge node endpoint.
-  // The existing node_runtime/main.py only exposes WebSocket on /ingest and /health.
-  // It does NOT yet expose an HTTP or WebSocket TOTP verification endpoint.
+  // PRODUCTION MODE: authenticate against the dedicated volunteer gateway.
+  // The TOTP value is sent in a request header, never in the URL/query string.
   try {
     const protocol = config.useSsl ? 'https' : 'http';
-    const authUrl = `${protocol}://${config.piHost}:${config.piPort}/api/v1/auth/volunteer-session`;
+    const authUrl = `${protocol}://${config.piHost}:${config.gatewayPort}/api/volunteer/auth`;
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
@@ -79,13 +77,10 @@ export const authenticateOperator = async (
     const response = await fetch(authUrl, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'X-TOTP-Code': cleanCode,
+        'X-Operator-ID': cleanId,
+        'X-Volunteer-Capability': 'both',
       },
-      body: JSON.stringify({
-        operator_id: cleanId,
-        totp_code: cleanCode,
-        client_type: 'volunteer_portal',
-      }),
       signal: controller.signal,
     });
 
@@ -94,13 +89,16 @@ export const authenticateOperator = async (
     if (response.ok) {
       const data = await response.json();
       const now = Date.now();
+      const pairingTtlMs = Math.max(1, Number(data.pairing_expires_in ?? data.expires_in ?? 300)) * 1000;
+      const sessionTtlMs = Math.max(1, Number(data.session_expires_in ?? 3600)) * 1000;
       const session: AuthSession = {
-        token: data.session_token || data.token,
+        token: data.pairing_token || data.session_token || data.token,
         operatorId: cleanId,
         issuedAt: now,
-        expiresAt: data.expires_at || now + SESSION_TTL_MS,
+        expiresAt: typeof data.expires_at === 'number' ? data.expires_at : now + sessionTtlMs,
+        pairingExpiresAt: now + pairingTtlMs,
         isAuthenticated: true,
-        nodeId: config.nodeId,
+        nodeId: data.node_id || config.nodeId,
       };
       activeSession = session;
       return { success: true, session };
@@ -113,7 +111,7 @@ export const authenticateOperator = async (
       return {
         success: false,
         errorMessage:
-          'Raspberry Pi backend returned 404/501: Authentication contract not yet implemented in node_runtime. Enable Dev/Mock mode for simulation.',
+          'AWARESPAN volunteer gateway endpoint was not found. Confirm the gateway service is enabled and the configured gateway port is reachable.',
       };
     } else {
       return {
@@ -125,7 +123,7 @@ export const authenticateOperator = async (
     const message = err instanceof Error ? err.message : String(err);
     return {
       success: false,
-      errorMessage: `Failed to contact Raspberry Pi node at ${config.piHost}:${config.piPort}. Ensure node is online or use Dev/Mock mode. Details: ${message}`,
+      errorMessage: `Failed to contact AWARESPAN volunteer gateway at ${config.piHost}:${config.gatewayPort}. Ensure node is online or use Dev/Mock mode. Details: ${message}`,
     };
   }
 };

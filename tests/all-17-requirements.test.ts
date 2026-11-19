@@ -8,6 +8,7 @@ describe('AWARESPAN Volunteer Portal — 17 Mandatory Test Scenarios', () => {
   const baseConfig: PiNodeConfig = {
     piHost: '192.168.1.50',
     piPort: 8766,
+    gatewayPort: 8443,
     useSsl: false,
     nodeId: 'sip-pi-001',
     mockMode: true,
@@ -228,7 +229,7 @@ describe('AWARESPAN Volunteer Portal — 17 Mandatory Test Scenarios', () => {
           if (mockWs.onmessage) {
             mockWs.onmessage({
               data: JSON.stringify({
-                type: 'reject',
+                type: 'error',
                 message: 'Capacity exceeded: maximum volunteer nodes (limit: 1)',
               }),
             } as any);
@@ -383,6 +384,7 @@ describe('AWARESPAN Volunteer Portal — 17 Mandatory Test Scenarios', () => {
     global.WebSocket = vi.fn().mockImplementation(() => {
       setTimeout(() => {
         if (mockWs.onopen) mockWs.onopen({} as any);
+        if (mockWs.onmessage) mockWs.onmessage({ data: JSON.stringify({ type: 'authorized', granted_capabilities: ['camera'] }) });
       }, 10);
       return mockWs;
     });
@@ -390,56 +392,45 @@ describe('AWARESPAN Volunteer Portal — 17 Mandatory Test Scenarios', () => {
     await client.connectAndVolunteer('camera', 'tok');
     expect(statuses).toContain('connected');
 
-    // Simulate unexpected socket drop
+    // Pairing tokens are single-use; a dropped production stream requires fresh TOTP.
     mockWs.onclose({ reason: 'Network offline' });
-    expect(statuses).toContain('reconnecting');
+    expect(statuses).toContain('disconnected');
     client.disconnect();
   });
 
   // ─────────────────────────────────────────────────────────────
   // 15. Reconnection after temporary connectivity loss
   // ─────────────────────────────────────────────────────────────
-  it('Scenario 15: Reconnection attempts backoff and reconnects when socket recovers', async () => {
+  it('Scenario 15: Production reconnect requires a fresh one-use pairing token', async () => {
     let reconnectReported = false;
-    let attempts = 0;
-
+    let errorMessage = '';
     const client = new PiConnectionClient(
       { ...baseConfig, mockMode: false },
       {
-        onStatusChange: (st) => {
-          if (st === 'reconnecting') reconnectReported = true;
-        },
+        onStatusChange: (st) => { if (st === 'reconnecting') reconnectReported = true; },
         onSourceAcknowledged: vi.fn(),
         onLatencyUpdate: vi.fn(),
         onHeartbeat: vi.fn(),
-        onError: () => {
-          attempts++;
-        },
+        onError: (message) => { errorMessage = message; },
         onClose: vi.fn(),
       }
     );
-
     const mockWs = {
-      send: vi.fn(),
-      close: vi.fn(),
-      readyState: 1,
-      onopen: null as any,
-      onclose: null as any,
+      send: vi.fn(), close: vi.fn(), readyState: 1,
+      onopen: null as any, onmessage: null as any, onclose: null as any,
     };
-
     // @ts-ignore
     global.WebSocket = vi.fn().mockImplementation(() => {
       setTimeout(() => {
-        if (mockWs.onopen) mockWs.onopen({} as any);
+        mockWs.onopen?.({} as any);
+        mockWs.onmessage?.({ data: JSON.stringify({ type: 'authorized', granted_capabilities: ['camera'] }) });
       }, 10);
       return mockWs;
     });
-
-    await client.connectAndVolunteer('camera', 'tok');
+    await client.connectAndVolunteer('camera', 'one-use-token');
     mockWs.onclose({ reason: 'Temporary glitch' });
-
-    expect(reconnectReported).toBe(true);
-    expect(attempts).toBeGreaterThanOrEqual(1);
+    expect(reconnectReported).toBe(false);
+    expect(errorMessage).toContain('single-use');
     client.disconnect();
   });
 

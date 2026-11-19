@@ -9,7 +9,7 @@ interface LoginModalProps {
 
 export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose }) => {
   const { login, config } = useVolunteer();
-  const [operatorId, setOperatorId] = useState('operator-alpha');
+  const [operatorId, setOperatorId] = useState('bch_benjamin');
   const [totpCode, setTotpCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);

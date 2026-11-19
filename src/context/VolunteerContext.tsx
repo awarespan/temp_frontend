@@ -446,7 +446,7 @@ export const VolunteerProvider: React.FC<{ children: ReactNode }> = ({ children 
       audioRmsLevel: 0,
     });
 
-    const connected = await piClientRef.current.connectAndVolunteer(effectiveMode, session.token);
+    const connected = await piClientRef.current.connectAndVolunteer(effectiveMode, session.token, session.pairingExpiresAt);
 
     if (!connected) {
       mediaManagerRef.current.stopCapture();

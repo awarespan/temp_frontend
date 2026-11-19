@@ -5,7 +5,7 @@ import type { PiDetectionEvent, AnnotatedFramePayload } from '../src/types';
 describe('Pi annotated detection dashboard feed', () => {
   it('subscribes to the read-only dashboard stream and forwards the event and boxed frame', async () => {
     const sockets: Array<any> = [];
-    // The first socket is /ingest; the second is the read-only dashboard `/` socket.
+    // The first socket is the authenticated volunteer gateway; the second is the read-only core dashboard socket.
     // @ts-ignore
     global.WebSocket = vi.fn().mockImplementation((url: string) => {
       const socket: any = {
@@ -27,7 +27,7 @@ describe('Pi annotated detection dashboard feed', () => {
     const acknowledgedSources: string[] = [];
     const receivedCapabilities: unknown[] = [];
     const client = new PiConnectionClient(
-      { piHost: 'node.example.test', piPort: 8766, useSsl: true, nodeId: 'node-01', mockMode: false },
+      { piHost: 'node.example.test', piPort: 8766, gatewayPort: 8443, useSsl: true, nodeId: 'node-01', mockMode: false },
       {
         onStatusChange: vi.fn(),
         onSourceAcknowledged: (source) => acknowledgedSources.push(source),
@@ -43,15 +43,15 @@ describe('Pi annotated detection dashboard feed', () => {
 
     const connecting = client.connectAndVolunteer('camera', 'session-token');
     expect(sockets).toHaveLength(1);
-    expect(sockets[0].url).toBe('wss://node.example.test:8766/ingest');
+    expect(sockets[0].url).toBe('wss://node.example.test:8443/ws/volunteer');
     sockets[0].onopen?.({});
+    expect(sockets[0].send).toHaveBeenCalledWith(JSON.stringify({ type: 'pairing_token', token: 'session-token' }));
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'authorized', granted_capabilities: ['camera'] }) });
     await expect(connecting).resolves.toBe(true);
 
     expect(sockets).toHaveLength(2);
     expect(sockets[1].url).toBe('wss://node.example.test:8766/');
-    // Opening a socket is not a source ACK; the Pi must send it.
-    expect(acknowledgedSources).toEqual([]);
-    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'ack', source: 'camera' }) });
+    // Only the authenticated gateway's authorised capability grants camera access.
     expect(acknowledgedSources).toEqual(['camera']);
 
     const capabilities = {

@@ -23,6 +23,33 @@ export interface PiClientCallbacks {
   onSourceRejected?: (source: 'camera' | 'microphone', reason: string) => void;
 }
 
+/**
+ * Encode a JPEG frame using node_runtime.volunteer_gateway.transport.protocol:
+ * AWSP | type | source length | source | sequence | timestamp | payload length | JPEG bytes.
+ */
+export const encodeVolunteerFrame = (payload: FramePayload): ArrayBuffer => {
+  const source = new TextEncoder().encode('portal');
+  const binary = atob(payload.jpeg_b64);
+  const jpeg = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) jpeg[i] = binary.charCodeAt(i);
+
+  const headerLength = 6 + source.length + 16;
+  const buffer = new ArrayBuffer(headerLength + jpeg.length);
+  const bytes = new Uint8Array(buffer);
+  bytes.set([0x41, 0x57, 0x53, 0x50, 0x01, source.length], 0); // AWSP + FRAME_JPEG
+  bytes.set(source, 6);
+  const view = new DataView(buffer);
+  let offset = 6 + source.length;
+  view.setUint32(offset, payload.frame_id >>> 0, false);
+  offset += 4;
+  view.setBigUint64(offset, BigInt(Math.max(0, Math.trunc(payload.ts_ms))), false);
+  offset += 8;
+  view.setUint32(offset, jpeg.length, false);
+  offset += 4;
+  bytes.set(jpeg, offset);
+  return buffer;
+};
+
 export class PiConnectionClient {
   private config: PiNodeConfig;
   private callbacks: PiClientCallbacks;
@@ -116,12 +143,19 @@ export class PiConnectionClient {
    */
   public async connectAndVolunteer(
     mode: VolunteerMode,
-    sessionToken: string
+    sessionToken: string,
+    pairingExpiresAt?: number,
   ): Promise<boolean> {
     this.manualStop = false;
     this.isRejected = false;
     this.activeMode = mode;
     this.reconnectAttempts = 0;
+
+    if (!this.config.mockMode && pairingExpiresAt !== undefined && Date.now() >= pairingExpiresAt) {
+      this.callbacks.onError('The one-use pairing token expired. Authenticate again before starting a stream.');
+      this.callbacks.onStatusChange('disconnected');
+      return false;
+    }
 
     return this.initiateSession(sessionToken);
   }
@@ -130,116 +164,114 @@ export class PiConnectionClient {
     this.isConnecting = true;
     this.callbacks.onStatusChange('connecting');
 
-    // ───────────────────────────────────────────────
-    // DEV / MOCK MODE SIMULATION
-    // ───────────────────────────────────────────────
     if (this.config.mockMode) {
       return this.initiateMockSession(sessionToken);
     }
 
-    // ───────────────────────────────────────────────
-    // PRODUCTION MODE: REAL PI WEBSOCKET
-    // ───────────────────────────────────────────────
     return new Promise((resolve) => {
+      let settled = false;
+      let connectionTimeout: number | null = null;
+      const finish = (value: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (connectionTimeout !== null) clearTimeout(connectionTimeout);
+        resolve(value);
+      };
+
       try {
         const protocol = this.config.useSsl ? 'wss' : 'ws';
-        // Connect to the verified /ingest endpoint from node_runtime/main.py
-        const url = `${protocol}://${this.config.piHost}:${this.config.piPort}/ingest`;
+        const url = `${protocol}://${this.config.piHost}:${this.config.gatewayPort}/ws/volunteer`;
         this.ws = new WebSocket(url);
 
-        const connectionTimeout = setTimeout(() => {
+        connectionTimeout = window.setTimeout(() => {
           if (this.isConnecting) {
             this.isConnecting = false;
-            if (this.ws) {
-              try { this.ws.close(); } catch (_) { /* ignore */ }
-            }
-            this.callbacks.onError(`Connection to Pi node at ${url} timed out (5000ms).`);
+            this.callbacks.onError(`Volunteer gateway at ${url} did not authorise the one-use pairing token within 8 seconds.`);
             this.callbacks.onStatusChange('disconnected');
-            resolve(false);
+            try { this.ws?.close(); } catch { /* ignore */ }
+            finish(false);
           }
-        }, 5000);
+        }, 8000);
 
         this.ws.onopen = () => {
-          clearTimeout(connectionTimeout);
-          this.isConnecting = false;
-          this.isConnected = true;
-          this.isVolunteering = true;
-          this.callbacks.onStatusChange('connected');
-          this.connectDashboardFeed();
-
-          // Send session handshake header / metadata if supported
+          // The bearer token is sent inside the encrypted WebSocket, not in the URL.
           try {
-            this.ws?.send(JSON.stringify({
-              type: 'volunteer_handshake',
-              session_token: sessionToken,
-              mode: this.activeMode,
-              client: 'awarespan-volunteer-portal',
-              ts_ms: Date.now(),
-            }));
-          } catch (e) {
-            console.warn('[PiClient] Handshake send failed:', e);
+            this.ws?.send(JSON.stringify({ type: 'pairing_token', token: sessionToken }));
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.callbacks.onError(`Could not send pairing token: ${message}`);
+            this.callbacks.onStatusChange('disconnected');
+            finish(false);
+            try { this.ws?.close(); } catch { /* ignore */ }
           }
-
-          // Start ping/latency monitoring
-          this.startHeartbeatMonitor();
-          resolve(true);
         };
 
         this.ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
+            if (data.type === 'authorized') {
+              this.isConnecting = false;
+              this.isConnected = true;
+              this.isVolunteering = true;
+              this.callbacks.onStatusChange('connected');
+              const granted: string[] = Array.isArray(data.granted_capabilities)
+                ? data.granted_capabilities : [];
+              if (granted.includes('camera')) this.callbacks.onSourceAcknowledged('camera');
+              if (granted.includes('microphone')) this.callbacks.onSourceAcknowledged('microphone');
+              this.connectDashboardFeed();
+              this.startHeartbeatMonitor();
+              this.callbacks.onHeartbeat(Date.now());
+              finish(true);
+              return;
+            }
+            if (data.type === 'error' || data.type === 'reject') {
+              this.isRejected = true;
+              const message = String(data.message || 'Volunteer gateway rejected the session.');
+              this.callbacks.onError(message);
+              this.callbacks.onStatusChange('rejected');
+              this.isConnecting = false;
+              finish(false);
+              try { this.ws?.close(); } catch { /* ignore */ }
+              return;
+            }
+            if (data.type === 'pong' && this.lastPingSentTs > 0) {
+              this.callbacks.onLatencyUpdate(Date.now() - this.lastPingSentTs);
+              this.callbacks.onHeartbeat(Date.now());
+            }
             if (data.type === 'capabilities') {
               this.callbacks.onCapabilities?.(data as PiNodeCapabilities);
             }
             if (data.type === 'source_rejected' && (data.source === 'camera' || data.source === 'microphone')) {
-              this.callbacks.onSourceRejected?.(data.source, String(data.reason || 'Source rejected by Pi.'));
-            }
-            if (data.type === 'pong' && this.lastPingSentTs > 0) {
-              const rtt = Date.now() - this.lastPingSentTs;
-              this.callbacks.onLatencyUpdate(rtt);
-            }
-            if (data.type === 'ack' && data.source) {
-              this.callbacks.onSourceAcknowledged(data.source);
-            }
-            if (data.type === 'heartbeat') {
-              this.callbacks.onHeartbeat(Date.now());
-            }
-            if (data.type === 'reject') {
-              this.isRejected = true;
-              this.callbacks.onError(data.message || 'Connection rejected by Pi node');
-              this.callbacks.onStatusChange('rejected');
-              this.disconnect(true);
+              this.callbacks.onSourceRejected?.(data.source, String(data.reason || 'Source rejected by node.'));
             }
           } catch {
-            // Non-JSON message from Pi
+            // Ignore non-JSON application messages; binary frames are server-to-client only here.
           }
         };
 
-        this.ws.onerror = (event) => {
-          console.warn('[PiClient] WebSocket error:', event);
+        this.ws.onerror = () => {
           if (this.isConnecting) {
-            clearTimeout(connectionTimeout);
             this.isConnecting = false;
-            this.callbacks.onError(`Failed to connect to Raspberry Pi at ${url}`);
+            this.callbacks.onError(`Failed to connect to volunteer gateway at ${url}`);
             this.callbacks.onStatusChange('disconnected');
-            resolve(false);
+            finish(false);
           }
         };
 
         this.ws.onclose = (event) => {
           const wasConnected = this.isConnected;
           this.isConnected = false;
+          this.isVolunteering = false;
           this.isConnecting = false;
           this.stopHeartbeatMonitor();
           this.closeDashboardFeed();
-
-          if (this.isRejected) {
-            this.callbacks.onClose(event.reason || 'Session rejected by node');
-            return;
-          }
-
-          if (!this.manualStop && wasConnected) {
-            this.handleUnexpectedDisconnect(event.reason || 'WebSocket closed unexpectedly');
+          if (!settled) {
+            this.callbacks.onStatusChange(this.isRejected ? 'rejected' : 'disconnected');
+            finish(false);
+          } else if (this.isRejected) {
+            this.callbacks.onClose(event.reason || 'Session rejected by gateway');
+          } else if (!this.manualStop && wasConnected) {
+            this.handleUnexpectedDisconnect(event.reason || 'Volunteer gateway connection closed');
           } else {
             this.callbacks.onStatusChange('disconnected');
             this.callbacks.onClose(event.reason || 'Session closed');
@@ -250,7 +282,7 @@ export class PiConnectionClient {
         const msg = err instanceof Error ? err.message : String(err);
         this.callbacks.onError(`WebSocket instantiation error: ${msg}`);
         this.callbacks.onStatusChange('disconnected');
-        resolve(false);
+        finish(false);
       }
     });
   }
@@ -383,6 +415,13 @@ export class PiConnectionClient {
   private handleUnexpectedDisconnect(reason: string): void {
     if (this.manualStop) return;
 
+    if (!this.config.mockMode) {
+      this.callbacks.onStatusChange('disconnected');
+      this.callbacks.onError(`Volunteer connection lost (${reason}). Pairing tokens are single-use; authenticate again to reconnect.`);
+      this.callbacks.onClose(reason);
+      return;
+    }
+
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts += 1;
       const delayMs = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 8000);
@@ -400,9 +439,8 @@ export class PiConnectionClient {
   }
 
   /**
-   * Transmit captured video frame to Raspberry Pi.
-   * Conforms exactly to node_runtime/main.py protocol:
-   * { "type": "frame", "frame_id": int, "ts_ms": int, "jpeg_b64": string }
+   * Transmit captured video frame through the authenticated volunteer gateway.
+   * Uses the AWSP binary packet framing expected by VolunteerGatewayServer.
    */
   public sendFrame(payload: FramePayload): boolean {
     if (!this.isConnected) return false;
@@ -414,7 +452,7 @@ export class PiConnectionClient {
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
-        this.ws.send(JSON.stringify(payload));
+        this.ws.send(encodeVolunteerFrame(payload));
         return true;
       } catch (e) {
         console.warn('[PiClient] Frame send error:', e);
@@ -428,23 +466,17 @@ export class PiConnectionClient {
   /**
    * Transmit audio chunk to Raspberry Pi (when audio ingestion endpoint is available).
    */
-  public sendAudioChunk(chunk: ArrayBuffer | Blob): boolean {
+  public sendAudioChunk(_chunk: ArrayBuffer | Blob): boolean {
     if (!this.isConnected) return false;
 
     if (this.config.mockMode) {
       return true;
     }
 
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try {
-        this.ws.send(chunk);
-        return true;
-      } catch (e) {
-        console.warn('[PiClient] Audio chunk send error:', e);
-        return false;
-      }
-    }
-
+    // Browser MediaRecorder Blob/WebM chunks aren't pcm_s16le. The edge runtime
+    // currently advertises browser microphone ingestion as unavailable, so do not
+    // send an incompatible or misleading audio payload.
+    this.callbacks.onSourceRejected?.('microphone', 'Browser microphone PCM ingestion is not enabled by the deployed edge runtime.');
     return false;
   }
 
@@ -468,7 +500,7 @@ export class PiConnectionClient {
     if (this.ws) {
       try {
         if (this.ws.readyState === WebSocket.OPEN) {
-          this.ws.send(JSON.stringify({ type: 'volunteer_stop', ts_ms: Date.now() }));
+          this.ws.send(JSON.stringify({ type: 'disconnect', ts_ms: Date.now() }));
         }
         this.ws.close();
       } catch (e) {

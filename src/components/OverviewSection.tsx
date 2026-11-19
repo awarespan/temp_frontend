@@ -1,14 +1,13 @@
 import React, { useState } from 'react';
 import { useVolunteer } from '../context/VolunteerContext';
 import { Cpu, Wifi, Activity, CheckCircle, AlertTriangle } from 'lucide-react';
-import { formatWsUrl } from '../services/config';
 
 export const OverviewSection: React.FC = () => {
   const { config, connectionState, telemetry, piCapabilities } = useVolunteer();
   const [probing, setProbing] = useState(false);
   const [probeResult, setProbeResult] = useState<string | null>(null);
 
-  const endpointUrl = formatWsUrl(config, '/ingest');
+  const endpointUrl = `${config.useSsl ? 'wss' : 'ws'}://${config.piHost}:${config.gatewayPort}/ws/volunteer`;
 
   const handleTestProbe = async () => {
     setProbing(true);

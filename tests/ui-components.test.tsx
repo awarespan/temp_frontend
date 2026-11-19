@@ -55,6 +55,7 @@ describe('AWARESPAN Volunteer Portal — UI Components Suite', () => {
   });
 
   it('renders VolunteerControls with 3 segmented mode buttons', () => {
+    vi.stubEnv('VITE_MOCK_MODE', 'false');
     render(
       <VolunteerProvider>
         <VolunteerControls onOpenAuthPrompt={vi.fn()} />
@@ -71,6 +72,7 @@ describe('AWARESPAN Volunteer Portal — UI Components Suite', () => {
     expect(screen.getByText('02 // Microphone').closest('button')).toBeDisabled();
     fireEvent.click(screen.getByText('01 // Camera'));
     expect(screen.getByText('Target Video Camera')).toBeInTheDocument();
+    vi.unstubAllEnvs();
   });
 
   it('renders OverviewSection with node ID and target URL', () => {

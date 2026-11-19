@@ -12,6 +12,7 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ isOpen, onClose }) => 
 
   const [piHost, setPiHost] = useState(config.piHost);
   const [piPort, setPiPort] = useState(config.piPort);
+  const [gatewayPort, setGatewayPort] = useState(config.gatewayPort);
   const [useSsl, setUseSsl] = useState(config.useSsl);
   const [nodeId, setNodeId] = useState(config.nodeId);
   const [mockMode, setMockMode] = useState(config.mockMode);
@@ -23,6 +24,7 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ isOpen, onClose }) => 
     updateConfig({
       piHost,
       piPort: Number(piPort),
+      gatewayPort: Number(gatewayPort),
       useSsl,
       nodeId,
       mockMode,
@@ -74,7 +76,7 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ isOpen, onClose }) => 
               <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
               <div>
                 <strong>Live Pi Mode:</strong> The frontend will connect directly to{' '}
-                <code>ws://{piHost}:{piPort}/ingest</code>. No responses will be fabricated.
+                <code>{useSsl ? 'wss' : 'ws'}://{piHost}:{gatewayPort}/ws/volunteer</code> for authenticated media, plus runtime health/dashboard on port {piPort}. No responses are fabricated.
               </div>
             </div>
           )}
@@ -96,7 +98,7 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ isOpen, onClose }) => 
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-mono uppercase text-[#bfbfbf] mb-1">
-                Port (node_runtime: 8766)
+                Core runtime port (health / dashboard)
               </label>
               <input
                 type="number"
@@ -107,6 +109,18 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ isOpen, onClose }) => 
               />
             </div>
 
+            <div>
+              <label className="block text-xs font-mono uppercase text-[#bfbfbf] mb-1">
+                Volunteer gateway port (default 8443)
+              </label>
+              <input
+                type="number"
+                value={gatewayPort}
+                onChange={(e) => setGatewayPort(Number(e.target.value))}
+                className="w-full bg-[#1a1a1a] border border-[#3c3c3c] focus:border-[#ff4f2b] px-3 py-2 text-sm font-mono text-[#f5f5f5] outline-none"
+                required
+              />
+            </div>
             <div>
               <label className="block text-xs font-mono uppercase text-[#bfbfbf] mb-1">
                 Node Identifier
@@ -145,6 +159,7 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ isOpen, onClose }) => 
                 onClick={() => {
                   setPiHost('localhost');
                   setPiPort(8766);
+                  setGatewayPort(8443);
                   setMockMode(false);
                 }}
                 className="px-2 py-1 text-[11px] font-mono bg-[#1a1a1a] hover:bg-[#252525] border border-[#3c3c3c] text-[#bfbfbf] cursor-pointer"
@@ -156,6 +171,7 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ isOpen, onClose }) => 
                 onClick={() => {
                   setPiHost('10.42.0.1');
                   setPiPort(8766);
+                  setGatewayPort(8443);
                   setMockMode(false);
                 }}
                 className="px-2 py-1 text-[11px] font-mono bg-[#1a1a1a] hover:bg-[#252525] border border-[#3c3c3c] text-[#bfbfbf] cursor-pointer"
@@ -167,6 +183,7 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ isOpen, onClose }) => 
                 onClick={() => {
                   setPiHost('192.168.1.50');
                   setPiPort(8766);
+                  setGatewayPort(8443);
                   setMockMode(true);
                 }}
                 className="px-2 py-1 text-[11px] font-mono bg-[#1a1a1a] hover:bg-[#252525] border border-[#3c3c3c] text-[#ff4f2b] cursor-pointer"
